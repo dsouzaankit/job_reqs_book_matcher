@@ -1,4 +1,4 @@
--- Repo layout: run DuckDB with cwd = jd_scrape so data/ resolves, or use an absolute path.
+-- Repo layout: run DuckDB with cwd = job_reqs_book_matcher so data/ resolves, or use an absolute path.
 ATTACH 'data/jds_books.duckdb' AS jds_books;
 USE jds_books;
 

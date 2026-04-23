@@ -2,8 +2,8 @@
 Repo-local defaults for DuckDB and optional EPUB dirs (no machine-specific paths).
 
 Override with environment variables:
-  JD_STAGING_DATA_DIR — directory containing jds_books.duckdb (default: <jd_scrape>/data)
-  JD_BOOKS_DIR — batch ingest directory for *.epub (default: <jd_scrape>/books)
+  JD_STAGING_DATA_DIR — directory containing jds_books.duckdb (default: <job_reqs_book_matcher>/data)
+  JD_BOOKS_DIR — batch ingest directory for *.epub (default: <job_reqs_book_matcher>/books)
 """
 
 from __future__ import annotations

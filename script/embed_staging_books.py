@@ -3,11 +3,11 @@ r"""
 Ingest EPUBs into DuckDB table ``staging_books``: 3-sentence chunks (default) or ``--headers-only``
 (headings only: ``h1`` top-level titles, no sentence chunking — faster for debugging). Resumable via chunk_id unless --no-resume.
 
-Default books dir (batch mode): ``<jd_scrape>/books`` — override with ``JD_BOOKS_DIR``.
+Default books dir (batch mode): ``<job_reqs_book_matcher>/books`` — override with ``JD_BOOKS_DIR``.
 Default DB (same file as JD ingest; second table): ``JD_STAGING_DATA_DIR/jds_books.duckdb``
-(default ``<jd_scrape>/data/jds_books.duckdb``).
+(default ``<job_reqs_book_matcher>/data/jds_books.duckdb``).
 
-Run (from ``jd_scrape/script`` after activating your venv):
+Run (from ``job_reqs_book_matcher/script`` after activating your venv):
   python embed_staging_books.py --headers-only
   python embed_staging_books.py --headers-only --limit-books 2 --reset
   python embed_staging_books.py
@@ -15,8 +15,8 @@ Run (from ``jd_scrape/script`` after activating your venv):
   python embed_staging_books.py --headers-only --epub "../books/Your Book.epub"
   python embed_staging_books.py --epub book.epub --no-resume
 
-DuckDB CLI (use a path that exists on your machine; repo layout uses ``jd_scrape/data/``):
-  cd <jd_scrape>
+DuckDB CLI (use a path that exists on your machine; repo layout uses ``job_reqs_book_matcher/data/``):
+  cd <job_reqs_book_matcher>
   duckdb
   ATTACH 'data/jds_books.duckdb' AS jds_books;
   USE jds_books;

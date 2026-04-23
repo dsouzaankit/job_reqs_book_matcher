@@ -6,12 +6,12 @@ sentence-transformers, requirements similarity), but stores rows in DuckDB.
 Table: staging_jd (~228 rows for the default JSON) with document text, DOUBLE[] embedding,
 and scalar metadata columns.
 
-Run from ``jd_scrape/script`` (activate your venv first):
+Run from ``job_reqs_book_matcher/script`` (activate your venv first):
   python embed_staging_jd_duckdb.py --reset --min-merge-chars 10
 
 Defaults:
   Input : ``../data/linkedin_data_engineer_edison_50mi.json`` (override with ``--input``)
-  DB    : ``<jd_scrape>/data/jds_books.duckdb`` (override with ``--db`` or ``JD_STAGING_DATA_DIR``)
+  DB    : ``<job_reqs_book_matcher>/data/jds_books.duckdb`` (override with ``--db`` or ``JD_STAGING_DATA_DIR``)
   If direct open fails on a mapped drive, the script retries path forms and then uses ATTACH from :memory:.
   ATTACH catalog alias for that fallback is ``jds_books`` (tables: ``jds_books.staging_jd``, etc.).
 
@@ -19,7 +19,7 @@ Query (optional):
   python embed_staging_jd_duckdb.py --query "Snowflake dbt" --n-results 5
 
 DuckDB CLI examples (paths must exist on your machine):
-  cd <jd_scrape>
+  cd <job_reqs_book_matcher>
   duckdb
   ATTACH 'data/jds_books.duckdb' AS jds_books;
   USE jds_books;

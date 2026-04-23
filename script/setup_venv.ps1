@@ -1,4 +1,4 @@
-# Creates .venv next to jd_scrape (parent of this script directory).
+# Creates .venv next to job_reqs_book_matcher (parent of this script directory).
 $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $VenvRoot = (Resolve-Path (Join-Path $ScriptDir "..")).Path

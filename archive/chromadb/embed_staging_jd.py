@@ -15,9 +15,9 @@ Install Chroma in the venv before running this script:
   pip install -r archive/chromadb/requirements-chroma.txt
 
 Run inside venv:
-  cd <path-to-jd_scrape>
+  cd <path-to-job_reqs_book_matcher>
   .\\.venv\\Scripts\\Activate.ps1
-  cd Z:\STUDY\web_scrape\jd_scrape\archive\chromadb
+  cd Z:\STUDY\web_scrape\job_reqs_book_matcher\archive\chromadb
   python embed_staging_jd.py --reset --min-merge-chars 10
 
 Defaults:

@@ -71,6 +71,6 @@ def connect_duckdb_database(
             + "\n".join(errors)
             + "\n\nWorkarounds:\n"
             + "  * Point at an NTFS folder on a local drive, e.g.\n"
-            + '      --db "C:/Users/<you>/AppData/Local/jd_scrape/jds_books.duckdb"\n'
+            + '      --db "C:/Users/<you>/AppData/Local/job_reqs_book_matcher/jds_books.duckdb"\n'
             + "  * Or set environment variable JD_STAGING_DATA_DIR.\n"
         ) from e
