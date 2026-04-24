@@ -48,3 +48,7 @@ Table: staging_books in the same DuckDB file. See the script’s docstring for -
 ## SQL
 
 script/sql/transformations.sql — example joins / similarity ideas. Use DuckDB with cwd at the repo root so data/jds_books.duckdb matches the ATTACH in the file, or edit paths.
+
+## Sample Report
+
+![Sample report](docs/sample_report.png)
