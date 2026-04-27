@@ -9,10 +9,10 @@ books/*
 # Generated next to the DB when embedding
 **/jds_books_duckdb_manifest.json
 
-# Local Chroma / embedding data — do not commit
+# Local Chroma / embedding data ï¿½ do not commit
 archive/chromadb/chroma_persist/*
 
-# Chroma data folder — do not commit
+# Chroma data folder ï¿½ do not commit
 data/chroma_db/*
 
 # cursor workspace files
@@ -24,3 +24,4 @@ data/chroma_db/*
 
 # powershell file within data folder (used for local setup)
 data/*.ps1
+# How to set JD_STAGING_DATA_DIR / JD_BOOKS_DIR: see README.md (Setup). Implemented in script/local_paths.py.
