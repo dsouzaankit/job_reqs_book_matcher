@@ -98,6 +98,7 @@ ORDER BY 1;
 
 -- Materialized reconciliation rows (SCD-style output candidate).
 -- This returns the unioned dataset that you can INSERT OVERWRITE into a curated table.
+CREATE OR REPLACE TABLE staging_jd_curated AS
 WITH source_window AS (
     SELECT *
     FROM staging_jd_raw
@@ -377,7 +378,6 @@ unioned AS (
     FROM classified c
     WHERE c.reconciliation_bucket = 'target_only_out_window'
 )
-CREATE OR REPLACE TABLE staging_jd_curated AS
 SELECT *
 FROM unioned;
 
