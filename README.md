@@ -91,11 +91,11 @@ Output shape includes search metadata and `jobs[]` records with `job_id`, `title
 From `script/` with the venv active:
 
 ```bash
-python embed_staging_jd_duckdb.py --reset --min-merge-chars 10
+python embed_staging_jd_duckdb.py --min-merge-chars 10
 ```
 
 Default input: latest `data/source_jd/<YYYY-MM-DD>/<epoch>/linkedin_jobs.json` for today UTC (override with `--input` file or date folder, or `--scrape-date`).
-Table: staging_jd in data/jds_books.duckdb (paths configurable; see local_paths / duckdb_connect).
+Table: append-only `staging_jd_raw` in `data/jds_books.duckdb` (paths configurable; see local_paths / duckdb_connect). Reconciliation SQL materializes `staging_jd_curated` for downstream queries.
 
 ## Books (EPUB) → DuckDB
 
@@ -111,7 +111,29 @@ Table: staging_books in the same DuckDB file. See the script’s docstring for -
 
 ## SQL
 
-script/sql/transformations.sql — example joins / similarity ideas. Use DuckDB with cwd at the repo root so data/jds_books.duckdb matches the ATTACH in the file, or edit paths.
+Run these in order (DuckDB cwd at repo root so `data/jds_books.duckdb` ATTACH paths resolve):
+
+1. `script/sql/jd_reconciliation_build.sql`
+   - Builds `staging_jd_latest` from append-only `staging_jd_raw`
+   - Computes reconciliation buckets
+   - Materializes `staging_jd_curated`
+2. `script/sql/transformations.sql`
+   - Crosswalk query only (safe for select-all/execute)
+   - Reads active rows from `staging_jd_curated`
+
+
+## DuckDB Table Read/Write Map
+
+| Component | Reads from | Writes to |
+| --- | --- | --- |
+| `script/embed_staging_jd_duckdb.py` | JSON input (`data/source_jd/<date>/<epoch>/linkedin_jobs.json`) | `staging_jd_raw` (append-only) |
+| `script/embed_staging_books.py` | EPUB chunks from `script/staging_books_epub.py` | `staging_books` |
+| `script/sql/jd_reconciliation_build.sql` | `staging_jd_raw`, `staging_jd_latest` | `staging_jd_latest` (view), `staging_jd_curated` (table) |
+| `script/sql/transformations.sql` | `staging_jd_curated` (active rows), `staging_books` | query result only (no table writes) |
+
+Notes:
+- `staging_jd` is legacy and no longer updated by the current JD ingest path.
+- `staging_jd_latest` is a convenience latest-row view; crosswalk uses `staging_jd_curated`.
 
 ## Sample Report
 

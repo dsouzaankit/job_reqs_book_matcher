@@ -3,7 +3,7 @@ r"""
 Same pipeline as the archived Chroma ingest ``archive/chromadb/embed_staging_jd.py`` (chunking,
 sentence-transformers, requirements similarity), but stores rows in DuckDB.
 
-Table: staging_jd (~228 rows for the default JSON) with document text, DOUBLE[] embedding,
+Table: append-only raw ``staging_jd_raw`` with document text, DOUBLE[] embedding,
 and scalar metadata columns.
 
 Run from ``job_reqs_book_matcher/script`` (activate your venv first):
@@ -14,7 +14,7 @@ Defaults:
   ``--scrape-date`` (today UTC if omitted). Override with ``--input`` (JSON file or date folder).
   DB    : ``<job_reqs_book_matcher>/data/jds_books.duckdb`` (override with ``--db`` or ``JD_STAGING_DATA_DIR``)
   If direct open fails on a mapped drive, the script retries path forms and then uses ATTACH from :memory:.
-  ATTACH catalog alias for that fallback is ``jds_books`` (tables: ``jds_books.staging_jd``, etc.).
+  ATTACH catalog alias for that fallback is ``jds_books`` (tables: ``jds_books.staging_jd_raw``, etc.).
 
 DuckDB CLI examples (paths must exist on your machine):
   cd <job_reqs_book_matcher>
@@ -22,12 +22,13 @@ DuckDB CLI examples (paths must exist on your machine):
   ATTACH 'data/jds_books.duckdb' AS jds_books;
   USE jds_books;
 Duckdb SQL query:
-  select chunk_id, document, requirements_headers, similarity_to_requirements from staging_jd;
+  select chunk_id, document, requirements_headers, similarity_to_requirements from staging_jd_raw;
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from datetime import datetime, timezone
@@ -47,7 +48,7 @@ ROOT = SCRIPT_DIR.parent
 SCRAPE_JSON_NAME = "linkedin_jobs.json"
 DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 DEFAULT_DUCKDB = data_dir() / "jds_books.duckdb"
-TABLE_NAME = "staging_jd"
+TABLE_NAME = "staging_jd_raw"
 DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 
@@ -153,6 +154,11 @@ def scrape_run_metadata(
 
 def _add_columns_if_missing(con: duckdb.DuckDBPyConnection, table_sql: str) -> None:
     for col, typ in (
+        ("content_hash", "VARCHAR"),
+        ("run_id", "VARCHAR"),
+        ("last_seen_at_utc", "TIMESTAMPTZ"),
+        ("is_obsolete", "BOOLEAN"),
+        ("obsoleted_at_utc", "TIMESTAMPTZ"),
         ("scrape_batch_date", "VARCHAR"),
         ("scrape_attempt_epoch", "BIGINT"),
         ("source_scraped_at_utc", "TIMESTAMPTZ"),
@@ -172,7 +178,8 @@ def _ensure_table(con: duckdb.DuckDBPyConnection, reset: bool, table_sql: str) -
     con.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {table_sql} (
-            chunk_id VARCHAR PRIMARY KEY,
+            chunk_version_id VARCHAR PRIMARY KEY,
+            chunk_id VARCHAR,
             document VARCHAR,
             embedding DOUBLE[],
             job_id VARCHAR NOT NULL,
@@ -186,8 +193,13 @@ def _ensure_table(con: duckdb.DuckDBPyConnection, reset: bool, table_sql: str) -
             similarity_to_requirements DOUBLE,
             has_requirements_sections BOOLEAN,
             embedding_model VARCHAR,
+            content_hash VARCHAR,
+            run_id VARCHAR,
             source_json VARCHAR,
             ingested_at_utc TIMESTAMPTZ,
+            last_seen_at_utc TIMESTAMPTZ,
+            is_obsolete BOOLEAN,
+            obsoleted_at_utc TIMESTAMPTZ,
             scrape_batch_date VARCHAR,
             scrape_attempt_epoch BIGINT,
             source_scraped_at_utc TIMESTAMPTZ
@@ -206,6 +218,7 @@ def _load_build_rows(
     embedding_model: str,
     source_json: str,
     ingested_at: datetime,
+    run_id: str,
     scrape_batch_date: str | None,
     scrape_attempt_epoch: int | None,
     source_scraped_at_utc: datetime | None,
@@ -215,6 +228,7 @@ def _load_build_rows(
         meta = all_metas[i]
         rows.append(
             (
+                f"{chunk_id}:{run_id}",
                 chunk_id,
                 all_texts[i],
                 embeddings_list[i],
@@ -229,8 +243,23 @@ def _load_build_rows(
                 float(meta["similarity_to_requirements"]),
                 bool(meta["has_requirements_sections"]),
                 embedding_model,
+                hashlib.sha256(
+                    (
+                        all_texts[i].strip()
+                        + "|"
+                        + str(meta["job_id"])
+                        + "|"
+                        + str(meta["chunk_index"])
+                        + "|"
+                        + embedding_model
+                    ).encode("utf-8")
+                ).hexdigest(),
+                run_id,
                 source_json,
                 ingested_at,
+                ingested_at,
+                False,
+                None,
                 scrape_batch_date,
                 scrape_attempt_epoch,
                 source_scraped_at_utc,
@@ -324,6 +353,7 @@ def main() -> None:
 
     args.db.parent.mkdir(parents=True, exist_ok=True)
     ingested_at = datetime.now(timezone.utc)
+    run_id = str(int(ingested_at.timestamp() * 1000))
     source_json_s = str(input_json.resolve())
     embeddings_list: list[list[float]] = chunk_embs.astype(float).tolist()
 
@@ -335,6 +365,7 @@ def main() -> None:
         args.model,
         source_json_s,
         ingested_at,
+        run_id,
         scrape_batch_date,
         scrape_attempt_epoch,
         source_scraped_at_utc,
@@ -347,14 +378,19 @@ def main() -> None:
         print("Note: DuckDB opened the file via ATTACH (direct connect failed on this path).")
     try:
         _ensure_table(con, args.reset, table_sql)
-        con.execute(f"DELETE FROM {table_sql}")  # full refresh each run
         con.executemany(
             f"""
-            INSERT INTO {table_sql} VALUES (
-                ?::VARCHAR, ?::VARCHAR, ?::DOUBLE[], ?::VARCHAR, ?::INTEGER, ?::INTEGER,
-                ?::VARCHAR, ?::VARCHAR, ?::VARCHAR, ?::VARCHAR, ?::VARCHAR,
-                ?::DOUBLE, ?::BOOLEAN, ?::VARCHAR, ?::VARCHAR, ?::TIMESTAMPTZ,
-                ?::VARCHAR, ?::BIGINT, ?::TIMESTAMPTZ
+            INSERT INTO {table_sql} (
+                chunk_version_id, chunk_id, document, embedding, job_id, chunk_index, num_chunks,
+                title, company, location, url, requirements_headers,
+                similarity_to_requirements, has_requirements_sections, embedding_model,
+                content_hash, run_id, source_json, ingested_at_utc, last_seen_at_utc,
+                is_obsolete, obsoleted_at_utc, scrape_batch_date, scrape_attempt_epoch, source_scraped_at_utc
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?
             )
             """,
             rows,
@@ -365,6 +401,7 @@ def main() -> None:
     manifest = {
         "duckdb_path": db_connect,
         "table": table_sql,
+        "run_id": run_id,
         "duckdb_used_attach_fallback": used_attach,
         "embedding_model": args.model,
         "num_jobs": len(jobs),
@@ -387,12 +424,17 @@ def main() -> None:
             "scrape_batch_date",
             "scrape_attempt_epoch",
             "source_scraped_at_utc",
+            "content_hash",
+            "run_id",
+            "last_seen_at_utc",
+            "is_obsolete",
+            "obsoleted_at_utc",
         ],
     }
     manifest_path = args.db.parent / "jds_books_duckdb_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
-    print(f"Table: {table_sql}")
+    print(f"Table (append-only raw): {table_sql}")
     print(f"Rows: {len(all_ids)} from {len(jobs)} jobs")
     print(f"Source JSON: {source_json_s}")
     print(f"scrape_batch_date={scrape_batch_date!r} scrape_attempt_epoch={scrape_attempt_epoch!r}")
@@ -407,8 +449,22 @@ def main() -> None:
             q = re.sub(r"\s+", " ", args.query.strip())
             qv = embedder.encode([q], normalize_embeddings=True, convert_to_numpy=True)[0].astype(np.float64)
             rel = con.execute(
-                f"SELECT chunk_id, document, job_id, title, company, "
-                f"location, similarity_to_requirements, embedding FROM {qtable_sql}"
+                f"""
+                SELECT chunk_id, document, job_id, title, company, location,
+                       similarity_to_requirements, embedding
+                FROM (
+                    SELECT *,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY chunk_id
+                               ORDER BY coalesce(source_scraped_at_utc, ingested_at_utc) DESC,
+                                        ingested_at_utc DESC,
+                                        run_id DESC
+                           ) AS rn
+                    FROM {qtable_sql}
+                    WHERE coalesce(is_obsolete, FALSE) = FALSE
+                ) t
+                WHERE rn = 1
+                """
             ).fetchall()
         finally:
             con.close()

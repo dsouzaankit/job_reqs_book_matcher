@@ -1,3 +1,7 @@
+-- Crosswalk-only query file.
+-- Prerequisite: run script/sql/jd_reconciliation_build.sql first to create/refresh staging_jd_curated.
+-- Then run this file with select-all/execute.
+
 -- Repo layout: run DuckDB with cwd = job_reqs_book_matcher so data/ resolves, or use an absolute path.
 ATTACH 'data/jds_books.duckdb' AS jds_books;
 USE jds_books;
@@ -40,8 +44,9 @@ with book_info as (
             book_info.book_embedding::DOUBLE[384]
         ) as cosine_similarity
         , book_info.book_chunk_id as book_chunk_id
-    from staging_jd jds, book_info
-    where jds.requirements_headers != jds.document  -- ignore matches to requirement related section headers in jd
+    from staging_jd_curated jds, book_info
+    where coalesce(jds.is_obsolete, FALSE) = FALSE
+    and jds.requirements_headers != jds.document  -- ignore matches to requirement related section headers in jd
     and jds.requirements_headers not like '%' || jds.document || '%'    -- ignore matches to requiremnent related section headers in jd
     and jds.requirements_headers not like '%' || book_info.book_section_title_chunk_debug || '%'    -- ignore matches to requiremnent related section headers in jd
     -- and lower(jds.document) not in ('requirements', 'work authorization', 'equal opportunity', 'eeo')
