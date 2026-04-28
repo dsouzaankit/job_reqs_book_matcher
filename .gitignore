@@ -22,6 +22,10 @@ data/chroma_db/*
 .idea/
 .vscode/
 
-# powershell file within data folder (used for local setup)
-data/*.ps1
+# set env vars on local machine and run pipeline locally
+local_run/*
 # How to set JD_STAGING_DATA_DIR / JD_BOOKS_DIR: see README.md (Setup). Implemented in script/local_paths.py.
+
+# python cache files
+__pycache__/
+*.py[cod]

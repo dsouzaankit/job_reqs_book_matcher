@@ -10,7 +10,8 @@ Run from ``job_reqs_book_matcher/script`` (activate your venv first):
   python embed_staging_jd_duckdb.py --reset --min-merge-chars 10
 
 Defaults:
-  Input : ``../data/linkedin_data_engineer_edison_50mi.json`` (override with ``--input``)
+  Input : latest ``linkedin_jobs.json`` under ``<repo>/data/source_jd/<YYYY-MM-DD>/<epoch>/`` for
+  ``--scrape-date`` (today UTC if omitted). Override with ``--input`` (JSON file or date folder).
   DB    : ``<job_reqs_book_matcher>/data/jds_books.duckdb`` (override with ``--db`` or ``JD_STAGING_DATA_DIR``)
   If direct open fails on a mapped drive, the script retries path forms and then uses ATTACH from :memory:.
   ATTACH catalog alias for that fallback is ``jds_books`` (tables: ``jds_books.staging_jd``, etc.).
@@ -43,10 +44,126 @@ from staging_jd_core import chunk_document_for_embedding
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parent
-DEFAULT_JSON = ROOT / "data" / "linkedin_data_engineer_edison_50mi.json"
+SCRAPE_JSON_NAME = "linkedin_jobs.json"
+DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 DEFAULT_DUCKDB = data_dir() / "jds_books.duckdb"
 TABLE_NAME = "staging_jd"
 DEFAULT_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+
+def _parse_iso_utc(s: str | None) -> datetime | None:
+    if not s or not isinstance(s, str):
+        return None
+    try:
+        t = s.replace("Z", "+00:00") if s.endswith("Z") else s
+        return datetime.fromisoformat(t)
+    except ValueError:
+        return None
+
+
+def _infer_batch_epoch_from_path(json_path: Path) -> tuple[str | None, int | None]:
+    """If path looks like .../source_jd/<YYYY-MM-DD>/<epoch>/linkedin_jobs.json (or legacy .../date/epoch/), return (date, epoch)."""
+    try:
+        resolved = json_path.resolve()
+    except OSError:
+        resolved = json_path
+    parent = resolved.parent
+    gparent = parent.parent
+    epoch_s = parent.name
+    date_s = gparent.name
+    epoch: int | None = int(epoch_s) if epoch_s.isdigit() else None
+    batch_date = date_s if DATE_DIR_RE.match(date_s) else None
+    return batch_date, epoch
+
+
+def resolve_latest_scrape_json(date_folder: Path) -> Path:
+    """Pick the numerically greatest epoch subdir that contains SCRAPE_JSON_NAME."""
+    if not date_folder.is_dir():
+        raise SystemExit(f"Scrape date folder is not a directory: {date_folder}")
+    best_ep = -1
+    best_path: Path | None = None
+    for child in date_folder.iterdir():
+        if not child.is_dir():
+            continue
+        if not child.name.isdigit():
+            continue
+        ep = int(child.name)
+        cand = child / SCRAPE_JSON_NAME
+        if cand.is_file() and ep > best_ep:
+            best_ep, best_path = ep, cand
+    if best_path is None:
+        raise SystemExit(
+            f"No {SCRAPE_JSON_NAME} found under epoch subfolders of {date_folder}. "
+            f"Expected layout: <date>/<epoch>/{SCRAPE_JSON_NAME} (date folder is usually under data/source_jd/)"
+        )
+    return best_path
+
+
+def resolve_input_json(
+    input_arg: Path | None,
+    scrape_date: str,
+) -> Path:
+    """Resolve CLI --input to a concrete JSON path."""
+    if input_arg is None:
+        primary = ROOT / "data" / "source_jd" / scrape_date
+        fallback = data_dir() / "source_jd" / scrape_date
+        legacy_a = ROOT / "data" / scrape_date
+        legacy_b = data_dir() / scrape_date
+        if primary.is_dir():
+            return resolve_latest_scrape_json(primary)
+        if fallback.is_dir():
+            return resolve_latest_scrape_json(fallback)
+        if legacy_a.is_dir():
+            return resolve_latest_scrape_json(legacy_a)
+        if legacy_b.is_dir():
+            return resolve_latest_scrape_json(legacy_b)
+        raise SystemExit(
+            f"No scrape folder for date {scrape_date!r}. Tried:\n  {primary}\n  {fallback}\n  {legacy_a}\n  {legacy_b}\n"
+            "Pass --input path/to/file.json or --input path/to/YYYY-MM-DD folder."
+        )
+
+    p = Path(input_arg).expanduser()
+    try:
+        p = p.resolve(strict=False)
+    except OSError:
+        p = Path(input_arg).expanduser()
+
+    if p.is_file():
+        return p
+    if p.is_dir():
+        return resolve_latest_scrape_json(p)
+    raise SystemExit(f"--input must be a JSON file or a date directory: {p}")
+
+
+def scrape_run_metadata(
+    json_path: Path, payload: dict[str, Any], scrape_date_fallback: str
+) -> tuple[str | None, int | None, datetime | None]:
+    path_batch, path_epoch = _infer_batch_epoch_from_path(json_path)
+    raw_epoch = payload.get("scrape_attempt_epoch")
+    if raw_epoch is not None:
+        epoch = int(raw_epoch)
+    else:
+        epoch = path_epoch
+    batch_date = path_batch
+    if batch_date is None and DATE_DIR_RE.match(scrape_date_fallback):
+        batch_date = scrape_date_fallback
+    scraped_at = _parse_iso_utc(payload.get("scraped_at_utc"))
+    return batch_date, epoch, scraped_at
+
+
+def _add_columns_if_missing(con: duckdb.DuckDBPyConnection, table_sql: str) -> None:
+    for col, typ in (
+        ("scrape_batch_date", "VARCHAR"),
+        ("scrape_attempt_epoch", "BIGINT"),
+        ("source_scraped_at_utc", "TIMESTAMPTZ"),
+    ):
+        try:
+            con.execute(f"ALTER TABLE {table_sql} ADD COLUMN IF NOT EXISTS {col} {typ}")
+        except Exception:
+            try:
+                con.execute(f"ALTER TABLE {table_sql} ADD COLUMN {col} {typ}")
+            except Exception:
+                pass
 
 
 def _ensure_table(con: duckdb.DuckDBPyConnection, reset: bool, table_sql: str) -> None:
@@ -70,10 +187,15 @@ def _ensure_table(con: duckdb.DuckDBPyConnection, reset: bool, table_sql: str) -
             has_requirements_sections BOOLEAN,
             embedding_model VARCHAR,
             source_json VARCHAR,
-            ingested_at_utc TIMESTAMPTZ
+            ingested_at_utc TIMESTAMPTZ,
+            scrape_batch_date VARCHAR,
+            scrape_attempt_epoch BIGINT,
+            source_scraped_at_utc TIMESTAMPTZ
         )
         """
     )
+    if not reset:
+        _add_columns_if_missing(con, table_sql)
 
 
 def _load_build_rows(
@@ -84,6 +206,9 @@ def _load_build_rows(
     embedding_model: str,
     source_json: str,
     ingested_at: datetime,
+    scrape_batch_date: str | None,
+    scrape_attempt_epoch: int | None,
+    source_scraped_at_utc: datetime | None,
 ) -> list[tuple[Any, ...]]:
     rows: list[tuple[Any, ...]] = []
     for i, chunk_id in enumerate(all_ids):
@@ -106,6 +231,9 @@ def _load_build_rows(
                 embedding_model,
                 source_json,
                 ingested_at,
+                scrape_batch_date,
+                scrape_attempt_epoch,
+                source_scraped_at_utc,
             )
         )
     return rows
@@ -113,7 +241,19 @@ def _load_build_rows(
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--input", type=Path, default=DEFAULT_JSON)
+    ap.add_argument(
+        "--input",
+        type=Path,
+        default=None,
+        help=f"JSON file, or YYYY-MM-DD folder with <epoch>/{SCRAPE_JSON_NAME}. "
+        "Default: latest epoch under data/source_jd/<--scrape-date> (repo data/ then JD_STAGING_DATA_DIR).",
+    )
+    ap.add_argument(
+        "--scrape-date",
+        type=str,
+        default=None,
+        help="YYYY-MM-DD used when --input is omitted (default: today UTC).",
+    )
     ap.add_argument("--db", type=Path, default=DEFAULT_DUCKDB, help="DuckDB file path")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--min-merge-chars", type=int, default=120)
@@ -122,11 +262,17 @@ def main() -> None:
     ap.add_argument("--n-results", type=int, default=5)
     args = ap.parse_args()
 
-    args.input = Path(args.input).expanduser().resolve(strict=False)
+    scrape_date = args.scrape_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    input_json = resolve_input_json(args.input, scrape_date)
     args.db = normalize_db_path(args.db)
 
-    payload = json.loads(args.input.read_text(encoding="utf-8"))
+    payload = json.loads(input_json.read_text(encoding="utf-8"))
     jobs: list[dict[str, Any]] = payload.get("jobs") or []
+
+    batch_fallback = scrape_date if args.input is None else ""
+    scrape_batch_date, scrape_attempt_epoch, source_scraped_at_utc = scrape_run_metadata(
+        input_json, payload, batch_fallback
+    )
 
     embedder = SentenceTransformer(args.model)
 
@@ -178,7 +324,7 @@ def main() -> None:
 
     args.db.parent.mkdir(parents=True, exist_ok=True)
     ingested_at = datetime.now(timezone.utc)
-    source_json_s = str(args.input.resolve())
+    source_json_s = str(input_json.resolve())
     embeddings_list: list[list[float]] = chunk_embs.astype(float).tolist()
 
     rows = _load_build_rows(
@@ -189,6 +335,9 @@ def main() -> None:
         args.model,
         source_json_s,
         ingested_at,
+        scrape_batch_date,
+        scrape_attempt_epoch,
+        source_scraped_at_utc,
     )
 
     con, db_connect, table_sql, used_attach = connect_duckdb_database(
@@ -204,7 +353,8 @@ def main() -> None:
             INSERT INTO {table_sql} VALUES (
                 ?::VARCHAR, ?::VARCHAR, ?::DOUBLE[], ?::VARCHAR, ?::INTEGER, ?::INTEGER,
                 ?::VARCHAR, ?::VARCHAR, ?::VARCHAR, ?::VARCHAR, ?::VARCHAR,
-                ?::DOUBLE, ?::BOOLEAN, ?::VARCHAR, ?::VARCHAR, ?::TIMESTAMPTZ
+                ?::DOUBLE, ?::BOOLEAN, ?::VARCHAR, ?::VARCHAR, ?::TIMESTAMPTZ,
+                ?::VARCHAR, ?::BIGINT, ?::TIMESTAMPTZ
             )
             """,
             rows,
@@ -220,6 +370,9 @@ def main() -> None:
         "num_jobs": len(jobs),
         "num_vectors": len(all_ids),
         "source_json": source_json_s,
+        "scrape_batch_date": scrape_batch_date,
+        "scrape_attempt_epoch": scrape_attempt_epoch,
+        "source_scraped_at_utc": source_scraped_at_utc.isoformat() if source_scraped_at_utc else None,
         "exported_at_utc": datetime.now(timezone.utc).isoformat(),
         "metadata_fields": [
             "similarity_to_requirements",
@@ -231,6 +384,9 @@ def main() -> None:
             "title",
             "company",
             "location",
+            "scrape_batch_date",
+            "scrape_attempt_epoch",
+            "source_scraped_at_utc",
         ],
     }
     manifest_path = args.db.parent / "jds_books_duckdb_manifest.json"
@@ -238,6 +394,8 @@ def main() -> None:
 
     print(f"Table: {table_sql}")
     print(f"Rows: {len(all_ids)} from {len(jobs)} jobs")
+    print(f"Source JSON: {source_json_s}")
+    print(f"scrape_batch_date={scrape_batch_date!r} scrape_attempt_epoch={scrape_attempt_epoch!r}")
     print(f"DuckDB: {db_connect}")
     print(f"Manifest: {manifest_path}")
 

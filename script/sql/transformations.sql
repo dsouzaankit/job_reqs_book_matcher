@@ -93,8 +93,8 @@ limit 10
 
 /*
 -- Example: attach another DB for one-off experiments (use paths that exist locally)
--- ATTACH 'other.duckdb' AS tmp_db;
--- USE tmp_db;
--- DETACH jds_books;
+ATTACH 'other.duckdb' AS tmp_db;
+USE tmp_db;
+DETACH jds_books;
 */
 
